@@ -10,7 +10,10 @@ import xml
 import xml.sax
 import xml.sax.handler
 
-RE_LETTERS_ONLY = re.compile("[\"']*(^[\w']*)[;.!?,\"]*$")
+
+BATCH_SIZE = 500 
+
+RE_LETTERS_ONLY = re.compile("[\"'*]*([\w']+)[*;.!?,\"]*")
 
 LETTER = re.compile('\w')
 
@@ -18,9 +21,6 @@ COMMON = set(['', 'the', 'of', 'and', 'to', 'a', 'in', 'for', 'is', 'on',
               'that', 'by', 'with', 'I', 'or', 'not', 'you', 'be', 'are', 
               'this', 'at', 'is', 'are', 'from', 'your', 'have', 'as', 
               'from', 'all', 'can', 'more', 'has'])
-
-def letters_only(s):
-    return ''.join(c for c in s if LETTER.match(c))
 
 def dict_merge(*dicts ):
     keys = set()
@@ -36,43 +36,11 @@ def dict_merge(*dicts ):
 
 def extract_words(s):
     for word in s.split():
-        word = word.lower()
-        match = RE_LETTERS_ONLY.match(word)
+        match = RE_LETTERS_ONLY.search(word.lower())
         if match:
             word = match.groups()[0]
-            word = letters_only(word)
             if word not in COMMON:
                 yield word 
-
-def parse_article(article_text):
-    handler = WikiCommentHandler()
-    article_text = "<page>" + article_text
-    xml.sax.parseString(article_text, handler, IgnoreErrors())
-    data = {}
-
-    data['text'] = "\n".join(filter(None, (s.strip() for s in handler.text_data['page'][0].encode('UTF8').split('\n'))))
-    data['id'] = handler.text_data['page-id'][0].encode('UTF8')
-    data['title'] = handler.text_data['page-title'][0].encode('UTF8')
-
-    i = "%08d" % int(data['id'])
-    data['id'] = i 
-    words = {}
-    for field in ['title', 'text']:
-        for word in extract_words(data[field]):
-            words[word] = {i: 1}
-    return i, data, words
-
-def open_redis_connection():
-    return redis.Redis(host='localhost', port=6379, db=0)
-
-def open_cassandra_connection():
-
-    pool = pycassa.connect('Articles')
-    raw = pycassa.ColumnFamily(pool, 'RawData')
-    polished = pycassa.ColumnFamily(pool, 'PolishedData')
-    index = pycassa.ColumnFamily(pool, 'index')
-    return pool, raw, polished, index
-
 
 class IgnoreErrors(xml.sax.handler.ErrorHandler):
     def error(self, exception):
@@ -99,50 +67,72 @@ class WikiCommentHandler(xml.sax.handler.ContentHandler):
         self.text_data.setdefault('-'.join(self.parse_level), []).append(''.join(self.character_data))
         self.parse_level.pop()
 
+    def __getitem__(self, key):
+        return self.text_data[key][0].encode('UTF8')
 
-def process(r, pool, raw, polished, ):
+    @staticmethod
+    def as_ident_string(i):
+        return "%08d" % int(i)
+
+    def as_dict(self):
+        return dict(text=self['page'],
+                    ident = self.as_ident_string(self['page-id']),
+                    title = self['page-title'])
+
+def parse_article(article_text):
+    handler = WikiCommentHandler()
+    xml.sax.parseString(article_text, handler, IgnoreErrors())
+
+    data = handler.as_dict()
+
+    words = {}
+    for field in ['title', 'text']:
+        for word in extract_words(data[field]):
+            words[word] = {data['ident']: 1}
+    return data['ident'], data, words
+
+
+
+def process_one_element(que, pool, raw, polished, ):
     try:
         while True:
-            md5 = r.rpop('pending')
+            md5 = que.pop()
             if not md5: return False 
-
             data = raw.get(md5, ['body'])['body']
-            # r.rpush('pending', md5)
             key, polished_data, keywords = parse_article(data)
-
             polished.insert(key, polished_data)
             return keywords
 
     except KeyboardInterrupt, e:
-        if md5: r.rpush('pending', md5)
+        if md5: que.unpop(md5)
         return None
     except Exception, e:
-        if md5: r.lpush('error', md5)
+        if md5: que.push(md5)
         raise e 
 
-        
-
-
-if __name__ == "__main__":
-    r = open_redis_connection()
-    pool, raw, polished, index = open_cassandra_connection()
+def process(status=lambda x:None):
+    q = common.Que()
+    pool, raw, polished, index = common.open_cassandra_connections()
     polished = polished.batch()
     batched_keywords = []
     
     counter = 0
     while True:
-        keywords = process(r, pool, raw, polished)
+        keywords = process(q, pool, raw, polished)
         if keywords is None:
             index.insert(dict_merge(*batched_keywords))
             polished.send()
             break
         counter += 1 
-        sys.stdout.write('.')
-        if counter > 500:
+        status('.')
+        if counter > BATCH_SIZE:
+            status('!')
             keywords = dict_merge(*batched_keywords)
             index.batch_insert(keywords)
             polished.send()
             counter = 0 
-        sys.stdout.flush()
+    status('done\n')
+        
 
-    print "done"
+if __name__ == "__main__":
+    process(status=lambda x:sys.stdout.write(s) and sys.stdout.flush())
