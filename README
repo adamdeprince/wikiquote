@@ -1,0 +1,69 @@
+This is a little experiment with Cassandra and Redis.  
+
+What are these tools:
+
+Cassandra is a distributed column store database.  It lets you file
+away items by "row name" and "column name", and return items by
+row(s), and column(s).  Sort of like Google's big-table.  Should scale
+well, doesn't synchronize very well.
+
+Redis is a RAM based database that offers excellent high speed
+synchronization and access to common memes in distributed processing
+such as shared deques (to implement job shops), subscriptions
+(twitter.)  It can be replicated on a master server basis to provide
+reliability, but it doesn't scale.
+
+These two compliment each other.  Cassandra provides massive parallel
+access to your data, Redis provides very high speed access for
+synchronization and control.
+
+It actually isn't true that Redis doesn't' scale, if you need to scale
+it, you are "doing it wrong."  If you need gobs of fast access to RAM
+backed dictionaries, use memcached.  Redis is for control, passing
+around meta-data, you say things like "What's the next video I should
+trans-code."  If you have a scaling problem the solution is to increase
+your granularity, "what's the next block of 10 videos I should
+trans-code."
+
+I wanted to practice creating a "job shop" batch processor in
+Cassandra and Redis.  So I created a tool to unpack and parse a
+wikiquotes dump.
+
+A wikiquotes dump essentially a large XML file consisting of about
+40,000 <page> </page> bocks, each <page> </page> block being a
+separate quote Author.  I'd like to parse each block of XML, extract
+its text, create a full text index on its text and have a framework
+for even more painful operations in the future.  And of course, I want
+to do this in parallel.
+
+The first step is to load the data.  There is no getting around the
+sequentially of this part, we have to decompress the the bzip file
+(yes, I know the bzip format is decompressiable in parallel, but bzcat
+doesn't seem to do that.)  The XML file then needs to be parsed well
+enough that <page></page> blocks can be identified.  XML parsing is
+slow, but fortunately the good wikiquotes folks put each page tag on
+its own line.
+
+./load.py reads the file, breaks the file into pages and creates a key
+from the md5 of each page.  The raw XML is dropped into Cassandra,
+indexed by this key, and the key is added to Redis.  On a 1.86Ghz
+MacBook Air this entire operation takes about 10 seconds of CPU time
+for the ~200Mb wikiquote XML file, although the entire operation
+requires about a minute, bzcat alone takes 30 seconds of CPU to
+uncompress this file.  The leftover is Cassandra, RPC, and mostly
+waiting for the MacBook Air's tiny SSD (Solid State Drives do not like
+heavy write loads.)
+
+When loaded (although nothing forces us to wait) ./parse_data.py is
+run.  ./parse_data.py pops one key from the Redis que, parses the XML,
+builds its contribution to the full text indexer and writes this back
+to a different part of Cassandra.
+
+Because Redis is synchronized there is nothing preventing us from
+starting up two copies of ./parse_data.py, or maybe 100 copies on a
+distributed cloud.  In fact, the primary bottleneck is I/O in and out
+of the Cassandra server, which can be accommodated by moving it off of
+my MacBook Air and onto a cluster of machines, perhaps the same
+machines that are performing the computation.  But if the computation
+to I/O ratio was low enough this is a problem, then Hadoop is probally
+a better solution.
