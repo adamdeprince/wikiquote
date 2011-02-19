@@ -1,15 +1,14 @@
 #!/usr/bin/env python
 
-
-import re 
-import sys
-import redis
-import pycassa  
+import common 
 import hashlib
+import pycassa  
+import re 
+import redis
+import sys
 import xml
 import xml.sax
 import xml.sax.handler
-
 
 BATCH_SIZE = 500 
 
@@ -93,7 +92,7 @@ def parse_article(article_text):
 
 
 
-def process_one_element(que, pool, raw, polished, ):
+def process_one_element(que, pool, raw, polished ):
     try:
         while True:
             md5 = que.pop()
@@ -117,22 +116,28 @@ def process(status=lambda x:None):
     batched_keywords = []
     
     counter = 0
-    while True:
-        keywords = process(q, pool, raw, polished)
-        if keywords is None:
-            index.insert(dict_merge(*batched_keywords))
-            polished.send()
-            break
-        counter += 1 
-        status('.')
-        if counter > BATCH_SIZE:
-            status('!')
-            keywords = dict_merge(*batched_keywords)
-            index.batch_insert(keywords)
-            polished.send()
-            counter = 0 
-    status('done\n')
+    try:
+        while True:
+            keywords = process_one_element(q, pool, raw, polished)
+            if keywords is None:
+                index.insert(dict_merge(*batched_keywords))
+                polished.send()
+                break
+            counter += 1 
+            status('.')
+            if counter > BATCH_SIZE:
+                status('!')
+                keywords = dict_merge(*batched_keywords)
+                index.batch_insert(keywords)
+                polished.send()
+                counter = 0 
+        status('done\n')
+    except KeyboardInterrupt:
+        polished.send()
         
-
 if __name__ == "__main__":
-    process(status=lambda x:sys.stdout.write(s) and sys.stdout.flush())
+    def log(s):
+        sys.stdout.write(s)
+        sys.stdout.flush()
+
+    process(status=log)
