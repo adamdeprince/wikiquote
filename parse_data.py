@@ -1,5 +1,7 @@
 #!/usr/bin/env python
 
+"Parses and indexes outstanding wikiquote articles"
+
 import common 
 import hashlib
 import pycassa  
@@ -22,6 +24,11 @@ COMMON = set(['', 'the', 'of', 'and', 'to', 'a', 'in', 'for', 'is', 'on',
               'from', 'all', 'can', 'more', 'has'])
 
 def dict_merge(*dicts ):
+    """dict_merge
+    
+    
+    """
+
     keys = set()
     for dict in dicts:
         map(keys.add, dict.keys())
@@ -93,6 +100,7 @@ def parse_article(article_text):
 
 
 def process_one_element(que, pool, raw, polished ):
+    md5 = None
     try:
         while True:
             md5 = que.pop()
@@ -119,16 +127,18 @@ def process(status=lambda x:None):
     try:
         while True:
             keywords = process_one_element(q, pool, raw, polished)
-            if keywords is None:
-                index.insert(dict_merge(*batched_keywords))
+            if not keywords:
+                if batched_keywords:
+                    index.insert(dict_merge(*batched_keywords))
                 polished.send()
                 break
             counter += 1 
             status('.')
             if counter > BATCH_SIZE:
                 status('!')
-                keywords = dict_merge(*batched_keywords)
-                index.batch_insert(keywords)
+                if batched_keywords:
+                    keywords = dict_merge(*batched_keywords)
+                    index.batch_insert(keywords)
                 polished.send()
                 counter = 0 
         status('done\n')

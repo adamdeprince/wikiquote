@@ -4,7 +4,6 @@
 import parse_data
 import unittest
 
-
 class DictUpdateTest(unittest.TestCase):
     def test_merge(self):
         a = {'a':{1:1},
@@ -15,7 +14,6 @@ class DictUpdateTest(unittest.TestCase):
                     'b':{1:1, 2:1},
                     'c':{2:1}}
         self.assertEqual(parse_data.dict_merge(a, b), expected)
-
 
 class ExtractWordsTest(unittest.TestCase):
     def test_extract_from_wikiwiki(self):
